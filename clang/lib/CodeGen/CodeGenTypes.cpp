@@ -819,6 +819,7 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
 
   // Layout fields.
   std::unique_ptr<CGRecordLayout> Layout = ComputeRecordLayout(RD, Ty);
+  Layout->createMemberGlobals(CGM, RD->getName());
   CGRecordLayouts[Key] = std::move(Layout);
 
   // If this struct blocked a FunctionType conversion, then recompute whatever

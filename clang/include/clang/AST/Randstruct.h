@@ -23,13 +23,16 @@ namespace clang {
 class ASTContext;
 class Decl;
 class RecordDecl;
+class CharUnits;
 
 namespace randstruct {
 
 bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
                               llvm::SmallVectorImpl<Decl *> &FinalOrdering);
 
-} // namespace randstruct
+CharUnits calculateWorstSize(const ASTContext &Context, const RecordDecl* RD);
+
+}// namespace randstruct
 } // namespace clang
 
 #endif // LLVM_CLANG_AST_RANDSTRUCT_H

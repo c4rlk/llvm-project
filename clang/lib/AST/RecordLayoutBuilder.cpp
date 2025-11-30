@@ -14,6 +14,7 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/Randstruct.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/VTableBuilder.h"
 #include "clang/Basic/TargetInfo.h"
@@ -2133,6 +2134,8 @@ void ItaniumRecordLayoutBuilder::LayoutField(const FieldDecl *D,
 }
 
 void ItaniumRecordLayoutBuilder::FinishLayout(const NamedDecl *D) {
+  // ToDo Carl set adpated size here
+
   // In C++, records cannot be of size 0.
   if (Context.getLangOpts().CPlusPlus && getSizeInBits() == 0) {
     if (const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D)) {
@@ -3440,11 +3443,21 @@ ASTContext::getASTRecordLayout(const RecordDecl *D) const {
       ItaniumRecordLayoutBuilder Builder(*this, /*EmptySubobjects=*/nullptr);
       Builder.Layout(D);
 
+      CharUnits size;
+
+      if (D->isRandomized() || D->getName() == "test") {
+        llvm::outs() << "Record: " << D->getName() << " shoud be randomized, so we calculate the worst case size\n";
+        size = randstruct::calculateWorstSize(*this, D);
+      } else {
+        size = Builder.getSize();
+      }
+      llvm::outs() << "Struct Size: " << size.getQuantity() << "\n";
+
       NewEntry = new (*this) ASTRecordLayout(
-          *this, Builder.getSize(), Builder.Alignment,
+          *this, size, Builder.Alignment,
           Builder.PreferredAlignment, Builder.UnadjustedAlignment,
           /*RequiredAlignment : used by MS-ABI)*/
-          Builder.Alignment, Builder.getSize(), Builder.FieldOffsets);
+          Builder.Alignment, size, Builder.FieldOffsets);
     }
   }
 

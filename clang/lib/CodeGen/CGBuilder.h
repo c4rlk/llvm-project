@@ -234,6 +234,24 @@ public:
                    Addr.isKnownNonNull());
   }
 
+  Address CreateStructGEP_32GlobalOffset(Address Addr, llvm::GlobalVariable* GlobalVar, const FieldDecl* Field, unsigned Index, const llvm::Twine &Name = "") {
+    llvm::Value *BasePtr = Addr.getBasePointer();
+    llvm::LLVMContext &Ctx = BasePtr->getContext();
+    llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
+    llvm::Value* Offset = CreatePtrToInt(GlobalVar, Int64Ty);
+
+    llvm::StructType *ElTy = cast<llvm::StructType>(Addr.getElementType());
+    const llvm::DataLayout &DL = BB->getDataLayout();
+    const llvm::StructLayout *Layout = DL.getStructLayout(ElTy);
+    auto AlignmentOffset = CharUnits::fromQuantity(Layout->getElementOffset(Index));
+
+    return Address(CreateGEP(llvm::Type::getInt8Ty(Ctx), BasePtr, Offset, Name),
+
+        Addr.getElementType(),
+        Addr.getAlignment().alignmentAtOffset(AlignmentOffset),
+        Addr.isKnownNonNull());
+  }
+
   /// Given
   ///   %addr = [n x T]* ...
   /// produce

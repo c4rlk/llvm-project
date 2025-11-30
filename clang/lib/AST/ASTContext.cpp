@@ -2388,6 +2388,7 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
   }
   case Type::Record:
   case Type::Enum: {
+                     // Carl marker
     const auto *TT = cast<TagType>(T);
     const TagDecl *TD = TT->getDecl()->getDefinitionOrSelf();
 

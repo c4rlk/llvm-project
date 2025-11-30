@@ -3514,6 +3514,19 @@ Value *ScalarExprEmitter::VisitOffsetOfExpr(OffsetOfExpr *E) {
   // Try folding the offsetof to a constant.
   Expr::EvalResult EVResult;
   if (E->EvaluateAsInt(EVResult, CGF.getContext())) {
+    // The underlying struct might be randomized
+    const Type* Type = E->getTypeSourceInfo()->getType().getTypePtr();
+    if (const RecordType* RT = Type->getAs<RecordType>()) {
+      RecordDecl *RD = RT->getDecl();
+      const CGRecordLayout &RL = CGF.CGM.getTypes().getCGRecordLayout(RD);
+      for (unsigned i = 0; i < E->getNumComponents(); ++i) {
+        const OffsetOfNode& C = E->getComponent(i);
+        if (C.getKind() == OffsetOfNode::Field) {
+          return RL.getGlobalVarForField(C.getField());
+        }
+      }
+      llvm_unreachable("Impossible for offsetof on a random struct to not have a field decl.");
+    }
     llvm::APSInt Value = EVResult.Val.getInt();
     return Builder.getInt(Value);
   }
@@ -3643,7 +3656,15 @@ ScalarExprEmitter::VisitUnaryExprOrTypeTraitExpr(
                                           VlaSize.NumElts);
         return VlaSize.NumElts;
       }
-    }
+    } /*else if(Kind == UETT_SizeOf && E->isArgumentType()) {
+      // ToDO: Only do this for RandStructs
+      const Type* Type = E->getArgumentType().getTypePtr();
+      if (const RecordType* RT = Type->getAs<RecordType>()) {
+        RecordDecl *RD = RT->getDecl();
+        const CGRecordLayout &RL = CGF.CGM.getTypes().getCGRecordLayout(RD);
+        return RL.getSizeOfRelocationSym();
+      }
+    } */
   } else if (E->getKind() == UETT_OpenMPRequiredSimdAlign) {
     auto Alignment =
         CGF.getContext()

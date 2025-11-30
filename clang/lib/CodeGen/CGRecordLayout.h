@@ -9,11 +9,13 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_CGRECORDLAYOUT_H
 #define LLVM_CLANG_LIB_CODEGEN_CGRECORDLAYOUT_H
 
+#include "CodeGenModule.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/GlobalVariable.h"
 
 namespace llvm {
   class StructType;
@@ -125,6 +127,8 @@ class CGRecordLayout {
   CGRecordLayout(const CGRecordLayout &) = delete;
   void operator=(const CGRecordLayout &) = delete;
 
+  static constexpr char RANDSTRUCT_RELOC_PREFIX[] = "_randstruct_offset_";
+
 private:
   /// The LLVM type corresponding to this record layout; used when
   /// laying it out as a complete object.
@@ -137,6 +141,10 @@ private:
   /// Map from (non-bit-field) struct field to the corresponding llvm struct
   /// type field no. This info is populated by record builder.
   llvm::DenseMap<const FieldDecl *, unsigned> FieldInfo;
+
+  /// Map from (non-bit-field) struct field to the corresponding llvm global
+  /// variable. Used for struct randomization, populated after record is build
+  llvm::DenseMap<const FieldDecl *, llvm::GlobalVariable *> GlobalVars;
 
   /// Map from (bit-field) struct field to the corresponding llvm struct type
   /// field no. This info is populated by record builder.
@@ -205,6 +213,14 @@ public:
     return FieldInfo.lookup(FD);
   }
 
+  // Return llvm::GlobalVariable* which is the absolut_symbol containg 
+  // the offset of the struct element
+  llvm::GlobalVariable* getGlobalVarForField(const FieldDecl *FD) const {
+    FD = FD->getCanonicalDecl();
+    assert(FieldInfo.count(FD) && "Invalid field for record!");
+    return GlobalVars.lookup(FD);
+  } 
+
   // Return whether the following non virtual base has a corresponding
   // entry in the LLVM struct.
   bool hasNonVirtualBaseLLVMField(const CXXRecordDecl *RD) const {
@@ -222,6 +238,35 @@ public:
     assert(CompleteObjectVirtualBases.count(base) && "Invalid virtual base!");
     return CompleteObjectVirtualBases.lookup(base);
   }
+
+  void createMemberGlobals(CodeGenModule& CGM, llvm::StringRef RecordName) {
+  // ToDo:
+  //    - only do this for C Structs, not other RecordDecl Types
+  auto &ctx = CGM.getLLVMContext();
+  auto &module = CGM.getModule();
+
+  llvm::Metadata *addrStartMeta = llvm::ConstantAsMetadata::get(
+      llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0));
+
+  llvm::Metadata *addrEndMeta = llvm::ConstantAsMetadata::get(
+      llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 256));
+
+  for (auto& field: FieldInfo) {
+    std::string name = RANDSTRUCT_RELOC_PREFIX + std::string(RecordName) + "_" + field.getFirst()->getNameAsString();
+    llvm::GlobalVariable *globalVar = new llvm::GlobalVariable(
+        module, llvm::Type::getInt32Ty(ctx), true,
+        llvm::GlobalValue::ExternalLinkage, nullptr, name);
+
+    globalVar->setAlignment(llvm::Align(4));
+
+    llvm::MDNode *absSymbolNode =
+        llvm::MDNode::get(ctx, {addrStartMeta, addrEndMeta});
+
+    globalVar->addMetadata("absolute_symbol", *absSymbolNode);
+
+    GlobalVars[field.getFirst()] = globalVar;
+  }
+};
 
   /// Return the BitFieldInfo that corresponds to the field FD.
   const CGBitFieldInfo &getBitFieldInfo(const FieldDecl *FD) const {

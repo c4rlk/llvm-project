@@ -223,5 +223,68 @@ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
   return true;
 }
 
+// This helper function calculates the worst possible size of a struct.
+// It does ignore if only a part of a struct is randomized.
+CharUnits calculateWorstSize(const ASTContext &Context, const RecordDecl *RD) {
+  // ToDo -- Carl: Structs in structs needs to be handeled explicitly!
+  // ToDo -- Carl: What is with bitfields
+  llvm::SmallVector<std::pair<uint64_t, uint64_t>, 64> fieldAlignmentAndSizes;
+  for (Decl *D : RD->decls()) {
+    if (auto *FD = dyn_cast<FieldDecl>(D)) {
+      uint64_t customAlignment = FD->getMaxAlignment();
+      uint64_t typeAlignment =
+          Context.getTypeAlignInChars(FD->getType()).getQuantity();
+      uint64_t size = Context.getTypeSizeInChars(FD->getType()).getQuantity();
+      fieldAlignmentAndSizes.push_back(
+          {size, std::max(customAlignment, typeAlignment)});
+    } else if (isa<IndirectFieldDecl>(D)) {
+      // ToDo -- Carl
+      llvm::errs() << "unhandeld case in calculateWorstSize\n";
+    } else {
+      llvm::errs() << "unhandeld case in calculateWorstSize\n";
+    }
+  }
+
+  std::sort(
+      fieldAlignmentAndSizes.begin(), fieldAlignmentAndSizes.end(),
+      [](const std::pair<uint64_t, uint64_t> &a,
+         const std::pair<uint64_t, uint64_t> &b) { return a.first < b.first; });
+
+  size_t start = 0;
+  size_t end = fieldAlignmentAndSizes.size() - 1;
+  uint64_t maxSizeofSize = 0;
+  uint64_t structDominatingAlignment = 1;
+  bool takeSmallest = true;
+
+  while (start <= end) {
+    std::pair<uint64_t, uint64_t> fieldInfo;
+    if (takeSmallest) {
+      fieldInfo = fieldAlignmentAndSizes[start++];
+    } else {
+      fieldInfo = fieldAlignmentAndSizes[end--];
+    }
+    takeSmallest = !takeSmallest;
+
+    uint64_t alignment = fieldInfo.second;
+    structDominatingAlignment = std::max(structDominatingAlignment, alignment);
+    uint64_t remainder = maxSizeofSize % alignment;
+
+    if (remainder) {
+      uint64_t padding = alignment - remainder;
+      maxSizeofSize += padding;
+    }
+
+    maxSizeofSize += fieldInfo.first;
+  }
+
+  uint64_t remainder = maxSizeofSize % structDominatingAlignment;
+  if (remainder) {
+    uint64_t padding = structDominatingAlignment - remainder;
+    maxSizeofSize += padding;
+  }
+
+  return CharUnits::fromQuantity(maxSizeofSize);
+}
+
 } // end namespace randstruct
 } // end namespace clang
