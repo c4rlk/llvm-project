@@ -19948,16 +19948,9 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
          (!Record->hasAttr<NoRandomizeLayoutAttr>() &&
           EntirelyFunctionPointers(Record)))) {
 
-      Record->setIsRandomized(true);
-
-    // ToDo: Change back to only work on structs that should be randomized
-      
-      // ToDo---Carl: Calculate sizeof here and set it
-      
-      // SmallVector<Decl *, 32> NewDeclOrdering;
-      // if (randstruct::randomizeStructureLayout(Context, Record,
-      //                                          NewDeclOrdering))
-      //   Record->reorderDecls(NewDeclOrdering);
+      SmallVector<Decl *, 32> NewDeclOrdering;
+      if (randstruct::rearangeToLargestLayout(Context, Record, NewDeclOrdering))
+          Record->reorderDecls(NewDeclOrdering);
     }
 
     // We may have deferred checking for a deleted destructor. Check now.

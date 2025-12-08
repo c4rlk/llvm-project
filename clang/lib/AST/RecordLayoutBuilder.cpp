@@ -3443,21 +3443,11 @@ ASTContext::getASTRecordLayout(const RecordDecl *D) const {
       ItaniumRecordLayoutBuilder Builder(*this, /*EmptySubobjects=*/nullptr);
       Builder.Layout(D);
 
-      CharUnits size;
-
-      if (D->isRandomized() || D->getName() == "test") {
-        llvm::outs() << "Record: " << D->getName() << " shoud be randomized, so we calculate the worst case size\n";
-        size = randstruct::calculateWorstSize(*this, D);
-      } else {
-        size = Builder.getSize();
-      }
-      llvm::outs() << "Struct Size: " << size.getQuantity() << "\n";
-
       NewEntry = new (*this) ASTRecordLayout(
-          *this, size, Builder.Alignment,
+          *this, Builder.getSize(), Builder.Alignment,
           Builder.PreferredAlignment, Builder.UnadjustedAlignment,
           /*RequiredAlignment : used by MS-ABI)*/
-          Builder.Alignment, size, Builder.FieldOffsets);
+          Builder.Alignment, Builder.getSize(), Builder.FieldOffsets);
     }
   }
 

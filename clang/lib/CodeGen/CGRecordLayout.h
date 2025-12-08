@@ -167,6 +167,10 @@ private:
   /// when zero-initialized.
   bool IsZeroInitializableAsBase : 1;
 
+  // False if the struct is not being randomized. requires that member globals
+  // are generated if true.
+  bool IsRandstruct : 1;
+
 public:
   CGRecordLayout(llvm::StructType *CompleteObjectType,
                  llvm::StructType *BaseSubobjectType,
@@ -175,7 +179,8 @@ public:
     : CompleteObjectType(CompleteObjectType),
       BaseSubobjectType(BaseSubobjectType),
       IsZeroInitializable(IsZeroInitializable),
-      IsZeroInitializableAsBase(IsZeroInitializableAsBase) {}
+      IsZeroInitializableAsBase(IsZeroInitializableAsBase),
+      IsRandstruct(false) {}
 
   /// Return the "complete object" LLVM type associated with
   /// this record.
@@ -203,6 +208,13 @@ public:
 
   bool containsFieldDecl(const FieldDecl *FD) const {
     return FieldInfo.count(FD) != 0;
+  }
+
+  bool isRandstruct() const {
+    return IsRandstruct;
+  }
+  void markAsRandstruct() {
+    IsRandstruct = true;
   }
 
   /// Return llvm::StructType element number that corresponds to the

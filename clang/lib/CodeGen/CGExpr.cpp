@@ -5255,11 +5255,16 @@ static Address emitAddrOfFieldStorage(CodeGenFunction &CGF, Address base,
   if (!IsInBounds)
     return CGF.Builder.CreateConstGEP2_32(base, 0, idx, field->getName());
 
-  llvm::GlobalVariable* globalOffset = CGF.CGM.getTypes().getCGRecordLayout(rec).getGlobalVarForField(field);
+  const CGRecordLayout &RL =
+        CGF.CGM.getTypes().getCGRecordLayout(field->getParent());
 
-  field->getType();
-  return CGF.Builder.CreateStructGEP_32GlobalOffset(base, globalOffset, field, idx, field->getName());
-  // return CGF.Builder.CreateStructGEP(base, idx, field->getName());
+  if (RL.isRandstruct()) {
+    llvm::GlobalVariable* globalOffset = CGF.CGM.getTypes().getCGRecordLayout(rec).getGlobalVarForField(field);
+
+    return CGF.Builder.CreateStructGEP_32GlobalOffset(base, globalOffset, field, idx, field->getName());
+  }
+ 
+  return CGF.Builder.CreateStructGEP(base, idx, field->getName());
 }
 
 static Address emitPreserveStructAccess(CodeGenFunction &CGF, LValue base,

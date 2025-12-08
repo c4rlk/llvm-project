@@ -20,6 +20,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
+#include <compare>
 #include <random>
 #include <set>
 #include <string>
@@ -165,10 +166,109 @@ void randomizeStructureLayoutImpl(const ASTContext &Context,
   FieldsOut = FinalOrder;
 }
 
+struct FieldInfo {
+  FieldDecl *FD;
+  uint64_t size;
+  uint64_t alignment;
+
+  FieldInfo() {};
+  FieldInfo(FieldDecl *FD, uint64_t size, uint64_t alignment)
+      : FD(FD), size(size), alignment(alignment) {}
+
+  bool operator<(const FieldInfo &other) const {
+    if (alignment != other.alignment)
+      return alignment < other.alignment;
+    return size < other.size;
+  }
+};
+
+void rearangeToLargestLayoutImpl(
+    const ASTContext &Context, llvm::SmallVectorImpl<FieldDecl *> &FieldsOut) {
+  llvm::SmallVector<FieldInfo, 64> FieldVec;
+  for (auto *FD : FieldsOut) {
+    if (FD->isBitField()) {
+      // ToDo -- Carl. Plus ensure that zero width bitfields and their
+      // implications are also correctly handled (if they are allowed in
+      // randomized structs)
+      llvm::errs() << "Bitfields in randomized structs not implemented\n";
+    } else {
+      uint64_t customAlignment = FD->getMaxAlignment();
+      uint64_t typeAlignment =
+          Context.getTypeAlignInChars(FD->getType()).getQuantity();
+      uint64_t size = Context.getTypeSizeInChars(FD->getType()).getQuantity();
+      FieldVec.push_back({FD, size, std::max(customAlignment, typeAlignment)});
+    }
+  }
+
+  std::stable_sort(FieldVec.begin(), FieldVec.end());
+
+  bool takeSmallest = true;
+  size_t start = 0;
+  size_t end = FieldVec.size() - 1;
+  SmallVector<FieldDecl *, 16> FinalOrder;
+  FieldInfo FI;
+
+  while (start <= end) {
+    if (takeSmallest) {
+      FI = FieldVec[start++];
+    } else {
+      FI = FieldVec[end--];
+    }
+    takeSmallest = !takeSmallest;
+    FinalOrder.push_back(FI.FD);
+  }
+  FieldsOut = FinalOrder;
+}
+
 } // anonymous namespace
 
 namespace clang {
 namespace randstruct {
+
+bool rearangeToLargestLayout(const ASTContext &Context, RecordDecl *RD,
+                             SmallVectorImpl<Decl *> &FinalOrdering) {
+  SmallVector<FieldDecl *, 64> ReorderdFields;
+  SmallVector<Decl *, 8> PostReorderdFields;
+
+  unsigned TotalNumFields = 0;
+  for (Decl *D : RD->decls()) {
+    ++TotalNumFields;
+    if (auto *FD = dyn_cast<FieldDecl>(D))
+      ReorderdFields.push_back(FD);
+    else if (isa<StaticAssertDecl>(D) || isa<IndirectFieldDecl>(D))
+      PostReorderdFields.push_back(D);
+    else
+      FinalOrdering.push_back(D);
+  }
+
+  if (ReorderdFields.empty())
+    return false;
+
+  // Struct might end with a flexible array or an array of size 0 or 1,
+  // This array needs to stay at the back and does not influence struct size.
+  FieldDecl *FlexibleArray =
+      RD->hasFlexibleArrayMember() ? ReorderdFields.pop_back_val() : nullptr;
+  if (!FlexibleArray) {
+    if (const auto *CA =
+            dyn_cast<ConstantArrayType>(ReorderdFields.back()->getType()))
+      if (CA->getSize().sle(2))
+        FlexibleArray = ReorderdFields.pop_back_val();
+  }
+
+  rearangeToLargestLayoutImpl(Context, ReorderdFields);
+
+  llvm::append_range(FinalOrdering, ReorderdFields);
+
+  llvm::append_range(FinalOrdering, PostReorderdFields);
+
+  if (FlexibleArray)
+    FinalOrdering.push_back(FlexibleArray);
+
+  assert(TotalNumFields == FinalOrdering.size() &&
+         "Decl count has been altered after Randstruct resizing!");
+  (void)TotalNumFields;
+  return true;
+}
 
 bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
                               SmallVectorImpl<Decl *> &FinalOrdering) {

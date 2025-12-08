@@ -819,7 +819,12 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
 
   // Layout fields.
   std::unique_ptr<CGRecordLayout> Layout = ComputeRecordLayout(RD, Ty);
-  Layout->createMemberGlobals(CGM, RD->getName());
+  llvm::outs() << "Creating struct " << RD->getName() << "\n" << "isRandom:" << Layout->isRandstruct() << "\n";
+  if (RD->isRandomized()) {
+    llvm::outs() << "In random case!\n";
+    Layout->markAsRandstruct();
+    Layout->createMemberGlobals(CGM, RD->getName());
+  }
   CGRecordLayouts[Key] = std::move(Layout);
 
   // If this struct blocked a FunctionType conversion, then recompute whatever

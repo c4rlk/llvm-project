@@ -30,6 +30,9 @@ namespace randstruct {
 bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
                               llvm::SmallVectorImpl<Decl *> &FinalOrdering);
 
+bool rearangeToLargestLayout(const ASTContext &Context, RecordDecl *RD,
+                                llvm::SmallVectorImpl<Decl *> &FinalOrdering);
+
 CharUnits calculateWorstSize(const ASTContext &Context, const RecordDecl* RD);
 
 }// namespace randstruct

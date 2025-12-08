@@ -2122,7 +2122,7 @@ static CharUnits GetNumNonZeroBytesInInit(const Expr *E, CodeGenFunction &CGF) {
 /// zeros in it, emit a memset and avoid storing the individual zeros.
 ///
 static void CheckAggExprForMemSetUse(AggValueSlot &Slot, const Expr *E,
-                                     CodeGenFunction &CGF) {
+                                     CodeGenFunction &CGF, bool isRandstruct) {
   // If the slot is already known to be zeroed, nothing to do.  Don't mess with
   // volatile stores.
   if (Slot.isZeroed() || Slot.isVolatile() || !Slot.getAddress().isValid())
@@ -2140,13 +2140,13 @@ static void CheckAggExprForMemSetUse(AggValueSlot &Slot, const Expr *E,
 
   // If the type is 16-bytes or smaller, prefer individual stores over memset.
   CharUnits Size = Slot.getPreferredSize(CGF.getContext(), E->getType());
-  if (Size <= CharUnits::fromQuantity(16))
+  if (Size <= CharUnits::fromQuantity(16) && !isRandstruct)
     return;
 
   // Check to see if over 3/4 of the initializer are known to be zero.  If so,
   // we prefer to emit memset + individual stores for the rest.
   CharUnits NumNonZeroBytes = GetNumNonZeroBytesInInit(E, CGF);
-  if (NumNonZeroBytes*4 > Size)
+  if (NumNonZeroBytes*4 > Size && !isRandstruct)
     return;
 
   // Okay, it seems like a good idea to use an initial memset, emit the call.
@@ -2166,14 +2166,14 @@ static void CheckAggExprForMemSetUse(AggValueSlot &Slot, const Expr *E,
 /// type.  The result is computed into DestPtr.  Note that if DestPtr is null,
 /// the value of the aggregate expression is not needed.  If VolatileDest is
 /// true, DestPtr cannot be 0.
-void CodeGenFunction::EmitAggExpr(const Expr *E, AggValueSlot Slot) {
+void CodeGenFunction::EmitAggExpr(const Expr *E, AggValueSlot Slot, bool isRandomized) {
   assert(E && hasAggregateEvaluationKind(E->getType()) &&
          "Invalid aggregate expression to emit");
   assert((Slot.getAddress().isValid() || Slot.isIgnored()) &&
          "slot has bits but no address");
 
   // Optimize the slot if possible.
-  CheckAggExprForMemSetUse(Slot, E, *this);
+  CheckAggExprForMemSetUse(Slot, E, *this, isRandomized);
 
   AggExprEmitter(*this, Slot, Slot.isIgnored()).Visit(const_cast<Expr*>(E));
 }

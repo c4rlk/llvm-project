@@ -1550,8 +1550,17 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
         return emission;
       }
 
+      bool isConstAggr = true;
+
+      if (const RecordType *recordType = Ty->getAs<RecordType>()) {
+        RecordDecl *recordDecl = recordType->getDecl();
+        // In this case we do not know the actual layout and thus may
+        // not use memcpy to set the values
+        if (recordDecl->isRandomized())
+          isConstAggr = false;
+      }
       // Otherwise, tell the initialization code that we're in this case.
-      emission.IsConstantAggregate = true;
+      emission.IsConstantAggregate = isConstAggr;
     }
 
     // A normal fixed sized variable becomes an alloca in the entry block,
@@ -2120,11 +2129,18 @@ void CodeGenFunction::EmitExprAsInit(const Expr *init, const ValueDecl *D,
         Overlap = AggValueSlot::DoesNotOverlap;
       else if (auto *FD = dyn_cast<FieldDecl>(D))
         Overlap = getOverlapForFieldInit(FD);
+
+      bool isRandstruct = false;
+      QualType QT = D->getType();
+      if (const RecordDecl *RD = QT->getAsRecordDecl())
+          isRandstruct = RD->isRandomized();
+
+      llvm::outs() << "Is randstruct: " << isRandstruct << "\n";
       // TODO: how can we delay here if D is captured by its initializer?
       EmitAggExpr(init,
                   AggValueSlot::forLValue(lvalue, AggValueSlot::IsDestructed,
                                           AggValueSlot::DoesNotNeedGCBarriers,
-                                          AggValueSlot::IsNotAliased, Overlap));
+                                          AggValueSlot::IsNotAliased, Overlap), isRandstruct);
     }
     return;
   }
