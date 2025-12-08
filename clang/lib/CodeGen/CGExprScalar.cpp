@@ -3518,14 +3518,16 @@ Value *ScalarExprEmitter::VisitOffsetOfExpr(OffsetOfExpr *E) {
     const Type* Type = E->getTypeSourceInfo()->getType().getTypePtr();
     if (const RecordType* RT = Type->getAs<RecordType>()) {
       RecordDecl *RD = RT->getDecl();
-      const CGRecordLayout &RL = CGF.CGM.getTypes().getCGRecordLayout(RD);
-      for (unsigned i = 0; i < E->getNumComponents(); ++i) {
-        const OffsetOfNode& C = E->getComponent(i);
-        if (C.getKind() == OffsetOfNode::Field) {
-          return RL.getGlobalVarForField(C.getField());
+      if (RD->isRandomized()) {
+        const CGRecordLayout &RL = CGF.CGM.getTypes().getCGRecordLayout(RD);
+        for (unsigned i = 0; i < E->getNumComponents(); ++i) {
+          const OffsetOfNode& C = E->getComponent(i);
+          if (C.getKind() == OffsetOfNode::Field) {
+            return RL.getGlobalVarForField(C.getField());
+          }
         }
+        llvm_unreachable("Impossible for offsetof on a random struct to not have a field decl.");
       }
-      llvm_unreachable("Impossible for offsetof on a random struct to not have a field decl.");
     }
     llvm::APSInt Value = EVResult.Val.getInt();
     return Builder.getInt(Value);
