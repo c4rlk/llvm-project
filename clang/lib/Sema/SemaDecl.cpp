@@ -19949,8 +19949,11 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
           EntirelyFunctionPointers(Record)))) {
 
       SmallVector<Decl *, 32> NewDeclOrdering;
-      if (randstruct::rearangeToLargestLayout(Context, Record, NewDeclOrdering))
+      if (randstruct::rearangeToLargestLayout(Context, Record, NewDeclOrdering)) {
           Record->reorderDecls(NewDeclOrdering);
+          llvm::outs() << "Randomized Record: "<< Record->getName() << "\n";
+
+      }
     }
 
     // We may have deferred checking for a deleted destructor. Check now.

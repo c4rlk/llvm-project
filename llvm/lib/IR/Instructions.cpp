@@ -3348,29 +3348,36 @@ CastInst::castIsValid(Instruction::CastOps op, Type *SrcTy, Type *DstTy) {
     return SrcTy->isIntOrIntVectorTy() && DstTy->isIntOrIntVectorTy() &&
            SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize;
   case Instruction::FPTrunc:
+    
     return SrcTy->isFPOrFPVectorTy() && DstTy->isFPOrFPVectorTy() &&
            SrcEC == DstEC && SrcScalarBitSize > DstScalarBitSize;
   case Instruction::FPExt:
+    
     return SrcTy->isFPOrFPVectorTy() && DstTy->isFPOrFPVectorTy() &&
            SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize;
   case Instruction::UIToFP:
   case Instruction::SIToFP:
+    
     return SrcTy->isIntOrIntVectorTy() && DstTy->isFPOrFPVectorTy() &&
            SrcEC == DstEC;
   case Instruction::FPToUI:
   case Instruction::FPToSI:
+    
     return SrcTy->isFPOrFPVectorTy() && DstTy->isIntOrIntVectorTy() &&
            SrcEC == DstEC;
   case Instruction::PtrToAddr:
   case Instruction::PtrToInt:
+    
     if (SrcEC != DstEC)
       return false;
     return SrcTy->isPtrOrPtrVectorTy() && DstTy->isIntOrIntVectorTy();
   case Instruction::IntToPtr:
+    
     if (SrcEC != DstEC)
       return false;
     return SrcTy->isIntOrIntVectorTy() && DstTy->isPtrOrPtrVectorTy();
   case Instruction::BitCast: {
+    
     PointerType *SrcPtrTy = dyn_cast<PointerType>(SrcTy->getScalarType());
     PointerType *DstPtrTy = dyn_cast<PointerType>(DstTy->getScalarType());
 
@@ -3399,16 +3406,20 @@ CastInst::castIsValid(Instruction::CastOps op, Type *SrcTy, Type *DstTy) {
     return true;
   }
   case Instruction::AddrSpaceCast: {
+    
     PointerType *SrcPtrTy = dyn_cast<PointerType>(SrcTy->getScalarType());
     if (!SrcPtrTy)
       return false;
+    
 
     PointerType *DstPtrTy = dyn_cast<PointerType>(DstTy->getScalarType());
     if (!DstPtrTy)
       return false;
+    
 
     if (SrcPtrTy->getAddressSpace() == DstPtrTy->getAddressSpace())
       return false;
+    
 
     return SrcEC == DstEC;
   }

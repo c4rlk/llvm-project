@@ -186,18 +186,14 @@ void rearangeToLargestLayoutImpl(
     const ASTContext &Context, llvm::SmallVectorImpl<FieldDecl *> &FieldsOut) {
   llvm::SmallVector<FieldInfo, 64> FieldVec;
   for (auto *FD : FieldsOut) {
-    if (FD->isBitField()) {
-      // ToDo -- Carl. Plus ensure that zero width bitfields and their
-      // implications are also correctly handled (if they are allowed in
-      // randomized structs)
-      llvm::errs() << "Bitfields in randomized structs not implemented\n";
-    } else {
-      uint64_t customAlignment = FD->getMaxAlignment();
-      uint64_t typeAlignment =
-          Context.getTypeAlignInChars(FD->getType()).getQuantity();
-      uint64_t size = Context.getTypeSizeInChars(FD->getType()).getQuantity();
-      FieldVec.push_back({FD, size, std::max(customAlignment, typeAlignment)});
-    }
+    // Bitfields will be treated like their own variables.
+    // Be aware, zero size bitfields are not removed here so they can affect
+    // alignment of fields/the size of the struct.
+    uint64_t customAlignment = FD->getMaxAlignment();
+    uint64_t typeAlignment =
+        Context.getTypeAlignInChars(FD->getType()).getQuantity();
+    uint64_t size = Context.getTypeSizeInChars(FD->getType()).getQuantity();
+    FieldVec.push_back({FD, size, std::max(customAlignment, typeAlignment)});
   }
 
   std::stable_sort(FieldVec.begin(), FieldVec.end());
@@ -233,9 +229,9 @@ bool rearangeToLargestLayout(const ASTContext &Context, RecordDecl *RD,
   unsigned TotalNumFields = 0;
   for (Decl *D : RD->decls()) {
     ++TotalNumFields;
-    if (auto *FD = dyn_cast<FieldDecl>(D))
+    if (auto *FD = dyn_cast<FieldDecl>(D)) {
       ReorderdFields.push_back(FD);
-    else if (isa<StaticAssertDecl>(D) || isa<IndirectFieldDecl>(D))
+    } else if (isa<StaticAssertDecl>(D) || isa<IndirectFieldDecl>(D))
       PostReorderdFields.push_back(D);
     else
       FinalOrdering.push_back(D);

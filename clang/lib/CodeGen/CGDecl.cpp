@@ -2135,7 +2135,6 @@ void CodeGenFunction::EmitExprAsInit(const Expr *init, const ValueDecl *D,
       if (const RecordDecl *RD = QT->getAsRecordDecl())
           isRandstruct = RD->isRandomized();
 
-      llvm::outs() << "Is randstruct: " << isRandstruct << "\n";
       // TODO: how can we delay here if D is captured by its initializer?
       EmitAggExpr(init,
                   AggValueSlot::forLValue(lvalue, AggValueSlot::IsDestructed,

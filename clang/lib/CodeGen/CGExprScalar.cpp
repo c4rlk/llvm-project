@@ -4272,6 +4272,10 @@ static Value *emitPointerArithmetic(CodeGenFunction &CGF, const BinOpInfo &op,
 llvm::Value *CodeGenFunction::EmitPointerArithmetic(
     const BinaryOperator *BO, Expr *pointerOperand, llvm::Value *pointer,
     Expr *indexOperand, llvm::Value *index, bool isSubtraction) {
+
+  if (auto GV = llvm::dyn_cast<llvm::GlobalVariable>(index))
+    return Builder.emitGEPWithAbsSym(pointer, GV, isSubtraction);
+
   bool isSigned = indexOperand->getType()->isSignedIntegerOrEnumerationType();
 
   unsigned width = cast<llvm::IntegerType>(index->getType())->getBitWidth();
@@ -4719,7 +4723,15 @@ Value *ScalarExprEmitter::EmitSub(const BinOpInfo &op) {
 
   // If the RHS is not a pointer, then we have normal pointer
   // arithmetic.
-  if (!op.RHS->getType()->isPointerTy())
+  bool rhsIsAbsSymbol = false;
+  if (auto GV = llvm::dyn_cast<llvm::GlobalVariable>(op.RHS)) {
+    if (GV->hasMetadata("absolute_symbol")) {
+      // Because the global var is absolute symbol we can emit a GEP
+      // This is also needed for the randstruct code
+      rhsIsAbsSymbol = true;
+    }
+  }
+  if (!op.RHS->getType()->isPointerTy() || rhsIsAbsSymbol)
     return emitPointerArithmetic(CGF, op, CodeGenFunction::IsSubtraction);
 
   // Otherwise, this is a pointer subtraction.

@@ -17,6 +17,7 @@
 #include "llvm/IR/GEPNoWrapFlags.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Type.h"
+#include <llvm/IR/GlobalVariable.h>
 
 namespace clang {
 namespace CodeGen {
@@ -234,22 +235,40 @@ public:
                    Addr.isKnownNonNull());
   }
 
-  Address CreateStructGEP_32GlobalOffset(Address Addr, llvm::GlobalVariable* GlobalVar, const FieldDecl* Field, unsigned Index, const llvm::Twine &Name = "") {
+  llvm::Value *emitGEPWithAbsSym(llvm::Value *pointer,
+                                 llvm::GlobalVariable *indexGV,
+                                 bool isSubtraction) {
+    llvm::LLVMContext &Ctx = pointer->getContext();
+    llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
+    llvm::Value *Offset = CreatePtrToInt(indexGV, Int64Ty);
+
+    if (isSubtraction) {
+      Offset = CreateSub(llvm::ConstantInt::get(Int64Ty, 0), Offset);
+    }
+
+    return CreateGEP(llvm::Type::getInt8Ty(Ctx), pointer, Offset);
+  }
+
+  Address CreateStructGEP_32GlobalOffset(Address Addr,
+                                         llvm::GlobalVariable *GlobalVar,
+                                         const FieldDecl *Field, unsigned Index,
+                                         const llvm::Twine &Name = "") {
     llvm::Value *BasePtr = Addr.getBasePointer();
     llvm::LLVMContext &Ctx = BasePtr->getContext();
     llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
-    llvm::Value* Offset = CreatePtrToInt(GlobalVar, Int64Ty);
+    llvm::Value *Offset = CreatePtrToInt(GlobalVar, Int64Ty);
 
     llvm::StructType *ElTy = cast<llvm::StructType>(Addr.getElementType());
     const llvm::DataLayout &DL = BB->getDataLayout();
     const llvm::StructLayout *Layout = DL.getStructLayout(ElTy);
-    auto AlignmentOffset = CharUnits::fromQuantity(Layout->getElementOffset(Index));
+    auto AlignmentOffset =
+        CharUnits::fromQuantity(Layout->getElementOffset(Index));
 
     return Address(CreateGEP(llvm::Type::getInt8Ty(Ctx), BasePtr, Offset, Name),
 
-        Addr.getElementType(),
-        Addr.getAlignment().alignmentAtOffset(AlignmentOffset),
-        Addr.isKnownNonNull());
+                   Addr.getElementType(),
+                   Addr.getAlignment().alignmentAtOffset(AlignmentOffset),
+                   Addr.isKnownNonNull());
   }
 
   /// Given
