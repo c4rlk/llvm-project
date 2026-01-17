@@ -1,0 +1,734 @@
+diff --git a/.editorconfig b/.editorconfig
+new file mode 100644
+index 000000000..0020fc03a
+--- /dev/null
++++ b/.editorconfig
+@@ -0,0 +1,5 @@
++root = true
++
++[*]
++indent_style = space
++indent_size = 2
+diff --git a/clang/include/clang/AST/Randstruct.h b/clang/include/clang/AST/Randstruct.h
+index d5eaf3091..f914e9812 100644
+--- a/clang/include/clang/AST/Randstruct.h
++++ b/clang/include/clang/AST/Randstruct.h
+@@ -23,13 +23,19 @@ namespace clang {
+ class ASTContext;
+ class Decl;
+ class RecordDecl;
++class CharUnits;
+ 
+ namespace randstruct {
+ 
+ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
+                               llvm::SmallVectorImpl<Decl *> &FinalOrdering);
+ 
+-} // namespace randstruct
++bool rearangeToLargestLayout(const ASTContext &Context, RecordDecl *RD,
++                                llvm::SmallVectorImpl<Decl *> &FinalOrdering);
++
++CharUnits calculateWorstSize(const ASTContext &Context, const RecordDecl* RD);
++
++}// namespace randstruct
+ } // namespace clang
+ 
+ #endif // LLVM_CLANG_AST_RANDSTRUCT_H
+diff --git a/clang/lib/AST/ASTContext.cpp b/clang/lib/AST/ASTContext.cpp
+index fab907b9c..eafc625b2 100644
+--- a/clang/lib/AST/ASTContext.cpp
++++ b/clang/lib/AST/ASTContext.cpp
+@@ -2388,6 +2388,7 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
+   }
+   case Type::Record:
+   case Type::Enum: {
++                     // Carl marker
+     const auto *TT = cast<TagType>(T);
+     const TagDecl *TD = TT->getDecl()->getDefinitionOrSelf();
+ 
+diff --git a/clang/lib/AST/Randstruct.cpp b/clang/lib/AST/Randstruct.cpp
+index c1bd76a2d..9b09ee199 100644
+--- a/clang/lib/AST/Randstruct.cpp
++++ b/clang/lib/AST/Randstruct.cpp
+@@ -20,6 +20,7 @@
+ #include "llvm/ADT/SmallVector.h"
+ 
+ #include <algorithm>
++#include <compare>
+ #include <random>
+ #include <set>
+ #include <string>
+@@ -165,11 +166,106 @@ void randomizeStructureLayoutImpl(const ASTContext &Context,
+   FieldsOut = FinalOrder;
+ }
+ 
++struct FieldInfo {
++  FieldDecl *FD;
++  uint64_t size;
++  uint64_t alignment;
++
++  FieldInfo() {};
++  FieldInfo(FieldDecl *FD, uint64_t size, uint64_t alignment)
++      : FD(FD), size(size), alignment(alignment) {}
++
++  bool operator<(const FieldInfo &other) const {
++    if (alignment != other.alignment)
++      return alignment < other.alignment;
++    return size < other.size;
++  }
++};
++
++void rearangeToLargestLayoutImpl(
++    const ASTContext &Context, llvm::SmallVectorImpl<FieldDecl *> &FieldsOut) {
++  llvm::SmallVector<FieldInfo, 64> FieldVec;
++  for (auto *FD : FieldsOut) {
++    // Bitfields will be treated like their own variables.
++    // Be aware, zero size bitfields are not removed here so they can affect
++    // alignment of fields/the size of the struct.
++    uint64_t customAlignment = FD->getMaxAlignment();
++    uint64_t typeAlignment =
++        Context.getTypeAlignInChars(FD->getType()).getQuantity();
++    uint64_t size = Context.getTypeSizeInChars(FD->getType()).getQuantity();
++    FieldVec.push_back({FD, size, std::max(customAlignment, typeAlignment)});
++  }
++
++  std::stable_sort(FieldVec.begin(), FieldVec.end());
++
++  bool takeSmallest = true;
++  size_t start = 0;
++  size_t end = FieldVec.size() - 1;
++  SmallVector<FieldDecl *, 16> FinalOrder;
++  FieldInfo FI;
++
++  while (start <= end) {
++    if (takeSmallest) {
++      FI = FieldVec[start++];
++    } else {
++      FI = FieldVec[end--];
++    }
++    takeSmallest = !takeSmallest;
++    FinalOrder.push_back(FI.FD);
++  }
++  FieldsOut = FinalOrder;
++}
++
+ } // anonymous namespace
+ 
+ namespace clang {
+ namespace randstruct {
+ 
++bool rearangeToLargestLayout(const ASTContext &Context, RecordDecl *RD,
++                             SmallVectorImpl<Decl *> &FinalOrdering) {
++  SmallVector<FieldDecl *, 64> ReorderdFields;
++  SmallVector<Decl *, 8> PostReorderdFields;
++
++  unsigned TotalNumFields = 0;
++  for (Decl *D : RD->decls()) {
++    ++TotalNumFields;
++    if (auto *FD = dyn_cast<FieldDecl>(D)) {
++      ReorderdFields.push_back(FD);
++    } else if (isa<StaticAssertDecl>(D) || isa<IndirectFieldDecl>(D))
++      PostReorderdFields.push_back(D);
++    else
++      FinalOrdering.push_back(D);
++  }
++
++  if (ReorderdFields.empty())
++    return false;
++
++  // Struct might end with a flexible array or an array of size 0 or 1,
++  // This array needs to stay at the back and does not influence struct size.
++  FieldDecl *FlexibleArray =
++      RD->hasFlexibleArrayMember() ? ReorderdFields.pop_back_val() : nullptr;
++  if (!FlexibleArray) {
++    if (const auto *CA =
++            dyn_cast<ConstantArrayType>(ReorderdFields.back()->getType()))
++      if (CA->getSize().sle(2))
++        FlexibleArray = ReorderdFields.pop_back_val();
++  }
++
++  rearangeToLargestLayoutImpl(Context, ReorderdFields);
++
++  llvm::append_range(FinalOrdering, ReorderdFields);
++
++  llvm::append_range(FinalOrdering, PostReorderdFields);
++
++  if (FlexibleArray)
++    FinalOrdering.push_back(FlexibleArray);
++
++  assert(TotalNumFields == FinalOrdering.size() &&
++         "Decl count has been altered after Randstruct resizing!");
++  (void)TotalNumFields;
++  return true;
++}
++
+ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
+                               SmallVectorImpl<Decl *> &FinalOrdering) {
+   SmallVector<FieldDecl *, 64> RandomizedFields;
+@@ -223,5 +319,68 @@ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
+   return true;
+ }
+ 
++// This helper function calculates the worst possible size of a struct.
++// It does ignore if only a part of a struct is randomized.
++CharUnits calculateWorstSize(const ASTContext &Context, const RecordDecl *RD) {
++  // ToDo -- Carl: Structs in structs needs to be handeled explicitly!
++  // ToDo -- Carl: What is with bitfields
++  llvm::SmallVector<std::pair<uint64_t, uint64_t>, 64> fieldAlignmentAndSizes;
++  for (Decl *D : RD->decls()) {
++    if (auto *FD = dyn_cast<FieldDecl>(D)) {
++      uint64_t customAlignment = FD->getMaxAlignment();
++      uint64_t typeAlignment =
++          Context.getTypeAlignInChars(FD->getType()).getQuantity();
++      uint64_t size = Context.getTypeSizeInChars(FD->getType()).getQuantity();
++      fieldAlignmentAndSizes.push_back(
++          {size, std::max(customAlignment, typeAlignment)});
++    } else if (isa<IndirectFieldDecl>(D)) {
++      // ToDo -- Carl
++      llvm::errs() << "unhandeld case in calculateWorstSize\n";
++    } else {
++      llvm::errs() << "unhandeld case in calculateWorstSize\n";
++    }
++  }
++
++  std::sort(
++      fieldAlignmentAndSizes.begin(), fieldAlignmentAndSizes.end(),
++      [](const std::pair<uint64_t, uint64_t> &a,
++         const std::pair<uint64_t, uint64_t> &b) { return a.first < b.first; });
++
++  size_t start = 0;
++  size_t end = fieldAlignmentAndSizes.size() - 1;
++  uint64_t maxSizeofSize = 0;
++  uint64_t structDominatingAlignment = 1;
++  bool takeSmallest = true;
++
++  while (start <= end) {
++    std::pair<uint64_t, uint64_t> fieldInfo;
++    if (takeSmallest) {
++      fieldInfo = fieldAlignmentAndSizes[start++];
++    } else {
++      fieldInfo = fieldAlignmentAndSizes[end--];
++    }
++    takeSmallest = !takeSmallest;
++
++    uint64_t alignment = fieldInfo.second;
++    structDominatingAlignment = std::max(structDominatingAlignment, alignment);
++    uint64_t remainder = maxSizeofSize % alignment;
++
++    if (remainder) {
++      uint64_t padding = alignment - remainder;
++      maxSizeofSize += padding;
++    }
++
++    maxSizeofSize += fieldInfo.first;
++  }
++
++  uint64_t remainder = maxSizeofSize % structDominatingAlignment;
++  if (remainder) {
++    uint64_t padding = structDominatingAlignment - remainder;
++    maxSizeofSize += padding;
++  }
++
++  return CharUnits::fromQuantity(maxSizeofSize);
++}
++
+ } // end namespace randstruct
+ } // end namespace clang
+diff --git a/clang/lib/AST/RecordLayoutBuilder.cpp b/clang/lib/AST/RecordLayoutBuilder.cpp
+index ac18d4da2..0e99d1a5f 100644
+--- a/clang/lib/AST/RecordLayoutBuilder.cpp
++++ b/clang/lib/AST/RecordLayoutBuilder.cpp
+@@ -14,6 +14,7 @@
+ #include "clang/AST/DeclCXX.h"
+ #include "clang/AST/DeclObjC.h"
+ #include "clang/AST/Expr.h"
++#include "clang/AST/Randstruct.h"
+ #include "clang/AST/RecordLayout.h"
+ #include "clang/AST/VTableBuilder.h"
+ #include "clang/Basic/TargetInfo.h"
+@@ -2133,6 +2134,8 @@ void ItaniumRecordLayoutBuilder::LayoutField(const FieldDecl *D,
+ }
+ 
+ void ItaniumRecordLayoutBuilder::FinishLayout(const NamedDecl *D) {
++  // ToDo Carl set adpated size here
++
+   // In C++, records cannot be of size 0.
+   if (Context.getLangOpts().CPlusPlus && getSizeInBits() == 0) {
+     if (const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D)) {
+diff --git a/clang/lib/CodeGen/CGBuilder.h b/clang/lib/CodeGen/CGBuilder.h
+index 090f75d3b..8fd389629 100644
+--- a/clang/lib/CodeGen/CGBuilder.h
++++ b/clang/lib/CodeGen/CGBuilder.h
+@@ -17,6 +17,7 @@
+ #include "llvm/IR/GEPNoWrapFlags.h"
+ #include "llvm/IR/IRBuilder.h"
+ #include "llvm/IR/Type.h"
++#include <llvm/IR/GlobalVariable.h>
+ 
+ namespace clang {
+ namespace CodeGen {
+@@ -234,6 +235,42 @@ public:
+                    Addr.isKnownNonNull());
+   }
+ 
++  llvm::Value *emitGEPWithAbsSym(llvm::Value *pointer,
++                                 llvm::GlobalVariable *indexGV,
++                                 bool isSubtraction) {
++    llvm::LLVMContext &Ctx = pointer->getContext();
++    llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
++    llvm::Value *Offset = CreatePtrToInt(indexGV, Int64Ty);
++
++    if (isSubtraction) {
++      Offset = CreateSub(llvm::ConstantInt::get(Int64Ty, 0), Offset);
++    }
++
++    return CreateGEP(llvm::Type::getInt8Ty(Ctx), pointer, Offset);
++  }
++
++  Address CreateStructGEP_32GlobalOffset(Address Addr,
++                                         llvm::GlobalVariable *GlobalVar,
++                                         const FieldDecl *Field, unsigned Index,
++                                         const llvm::Twine &Name = "") {
++    llvm::Value *BasePtr = Addr.getBasePointer();
++    llvm::LLVMContext &Ctx = BasePtr->getContext();
++    llvm::Type *Int64Ty = llvm::Type::getInt64Ty(Ctx);
++    llvm::Value *Offset = CreatePtrToInt(GlobalVar, Int64Ty);
++
++    llvm::StructType *ElTy = cast<llvm::StructType>(Addr.getElementType());
++    const llvm::DataLayout &DL = BB->getDataLayout();
++    const llvm::StructLayout *Layout = DL.getStructLayout(ElTy);
++    auto AlignmentOffset =
++        CharUnits::fromQuantity(Layout->getElementOffset(Index));
++
++    return Address(CreateGEP(llvm::Type::getInt8Ty(Ctx), BasePtr, Offset, Name),
++
++                   Addr.getElementType(),
++                   Addr.getAlignment().alignmentAtOffset(AlignmentOffset),
++                   Addr.isKnownNonNull());
++  }
++
+   /// Given
+   ///   %addr = [n x T]* ...
+   /// produce
+diff --git a/clang/lib/CodeGen/CGDecl.cpp b/clang/lib/CodeGen/CGDecl.cpp
+index 8b1cd83af..50e4ac8e6 100644
+--- a/clang/lib/CodeGen/CGDecl.cpp
++++ b/clang/lib/CodeGen/CGDecl.cpp
+@@ -1550,8 +1550,17 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
+         return emission;
+       }
+ 
++      bool isConstAggr = true;
++
++      if (const RecordType *recordType = Ty->getAs<RecordType>()) {
++        RecordDecl *recordDecl = recordType->getDecl();
++        // In this case we do not know the actual layout and thus may
++        // not use memcpy to set the values
++        if (recordDecl->isRandomized())
++          isConstAggr = false;
++      }
+       // Otherwise, tell the initialization code that we're in this case.
+-      emission.IsConstantAggregate = true;
++      emission.IsConstantAggregate = isConstAggr;
+     }
+ 
+     // A normal fixed sized variable becomes an alloca in the entry block,
+@@ -2120,11 +2129,17 @@ void CodeGenFunction::EmitExprAsInit(const Expr *init, const ValueDecl *D,
+         Overlap = AggValueSlot::DoesNotOverlap;
+       else if (auto *FD = dyn_cast<FieldDecl>(D))
+         Overlap = getOverlapForFieldInit(FD);
++
++      bool isRandstruct = false;
++      QualType QT = D->getType();
++      if (const RecordDecl *RD = QT->getAsRecordDecl())
++          isRandstruct = RD->isRandomized();
++
+       // TODO: how can we delay here if D is captured by its initializer?
+       EmitAggExpr(init,
+                   AggValueSlot::forLValue(lvalue, AggValueSlot::IsDestructed,
+                                           AggValueSlot::DoesNotNeedGCBarriers,
+-                                          AggValueSlot::IsNotAliased, Overlap));
++                                          AggValueSlot::IsNotAliased, Overlap), isRandstruct);
+     }
+     return;
+   }
+diff --git a/clang/lib/CodeGen/CGExpr.cpp b/clang/lib/CodeGen/CGExpr.cpp
+index 01f2161f2..d3411d911 100644
+--- a/clang/lib/CodeGen/CGExpr.cpp
++++ b/clang/lib/CodeGen/CGExpr.cpp
+@@ -5255,6 +5255,15 @@ static Address emitAddrOfFieldStorage(CodeGenFunction &CGF, Address base,
+   if (!IsInBounds)
+     return CGF.Builder.CreateConstGEP2_32(base, 0, idx, field->getName());
+ 
++  const CGRecordLayout &RL =
++        CGF.CGM.getTypes().getCGRecordLayout(field->getParent());
++
++  if (RL.isRandstruct()) {
++    llvm::GlobalVariable* globalOffset = CGF.CGM.getTypes().getCGRecordLayout(rec).getGlobalVarForField(field);
++
++    return CGF.Builder.CreateStructGEP_32GlobalOffset(base, globalOffset, field, idx, field->getName());
++  }
++ 
+   return CGF.Builder.CreateStructGEP(base, idx, field->getName());
+ }
+ 
+diff --git a/clang/lib/CodeGen/CGExprAgg.cpp b/clang/lib/CodeGen/CGExprAgg.cpp
+index eee397f1f..cae780082 100644
+--- a/clang/lib/CodeGen/CGExprAgg.cpp
++++ b/clang/lib/CodeGen/CGExprAgg.cpp
+@@ -2122,7 +2122,7 @@ static CharUnits GetNumNonZeroBytesInInit(const Expr *E, CodeGenFunction &CGF) {
+ /// zeros in it, emit a memset and avoid storing the individual zeros.
+ ///
+ static void CheckAggExprForMemSetUse(AggValueSlot &Slot, const Expr *E,
+-                                     CodeGenFunction &CGF) {
++                                     CodeGenFunction &CGF, bool isRandstruct) {
+   // If the slot is already known to be zeroed, nothing to do.  Don't mess with
+   // volatile stores.
+   if (Slot.isZeroed() || Slot.isVolatile() || !Slot.getAddress().isValid())
+@@ -2140,13 +2140,13 @@ static void CheckAggExprForMemSetUse(AggValueSlot &Slot, const Expr *E,
+ 
+   // If the type is 16-bytes or smaller, prefer individual stores over memset.
+   CharUnits Size = Slot.getPreferredSize(CGF.getContext(), E->getType());
+-  if (Size <= CharUnits::fromQuantity(16))
++  if (Size <= CharUnits::fromQuantity(16) && !isRandstruct)
+     return;
+ 
+   // Check to see if over 3/4 of the initializer are known to be zero.  If so,
+   // we prefer to emit memset + individual stores for the rest.
+   CharUnits NumNonZeroBytes = GetNumNonZeroBytesInInit(E, CGF);
+-  if (NumNonZeroBytes*4 > Size)
++  if (NumNonZeroBytes*4 > Size && !isRandstruct)
+     return;
+ 
+   // Okay, it seems like a good idea to use an initial memset, emit the call.
+@@ -2166,14 +2166,14 @@ static void CheckAggExprForMemSetUse(AggValueSlot &Slot, const Expr *E,
+ /// type.  The result is computed into DestPtr.  Note that if DestPtr is null,
+ /// the value of the aggregate expression is not needed.  If VolatileDest is
+ /// true, DestPtr cannot be 0.
+-void CodeGenFunction::EmitAggExpr(const Expr *E, AggValueSlot Slot) {
++void CodeGenFunction::EmitAggExpr(const Expr *E, AggValueSlot Slot, bool isRandomized) {
+   assert(E && hasAggregateEvaluationKind(E->getType()) &&
+          "Invalid aggregate expression to emit");
+   assert((Slot.getAddress().isValid() || Slot.isIgnored()) &&
+          "slot has bits but no address");
+ 
+   // Optimize the slot if possible.
+-  CheckAggExprForMemSetUse(Slot, E, *this);
++  CheckAggExprForMemSetUse(Slot, E, *this, isRandomized);
+ 
+   AggExprEmitter(*this, Slot, Slot.isIgnored()).Visit(const_cast<Expr*>(E));
+ }
+diff --git a/clang/lib/CodeGen/CGExprScalar.cpp b/clang/lib/CodeGen/CGExprScalar.cpp
+index 714192db1..af05ac02f 100644
+--- a/clang/lib/CodeGen/CGExprScalar.cpp
++++ b/clang/lib/CodeGen/CGExprScalar.cpp
+@@ -3514,6 +3514,21 @@ Value *ScalarExprEmitter::VisitOffsetOfExpr(OffsetOfExpr *E) {
+   // Try folding the offsetof to a constant.
+   Expr::EvalResult EVResult;
+   if (E->EvaluateAsInt(EVResult, CGF.getContext())) {
++    // The underlying struct might be randomized
++    const Type* Type = E->getTypeSourceInfo()->getType().getTypePtr();
++    if (const RecordType* RT = Type->getAs<RecordType>()) {
++      RecordDecl *RD = RT->getDecl();
++      if (RD->isRandomized()) {
++        const CGRecordLayout &RL = CGF.CGM.getTypes().getCGRecordLayout(RD);
++        for (unsigned i = 0; i < E->getNumComponents(); ++i) {
++          const OffsetOfNode& C = E->getComponent(i);
++          if (C.getKind() == OffsetOfNode::Field) {
++            return RL.getGlobalVarForField(C.getField());
++          }
++        }
++        llvm_unreachable("Impossible for offsetof on a random struct to not have a field decl.");
++      }
++    }
+     llvm::APSInt Value = EVResult.Val.getInt();
+     return Builder.getInt(Value);
+   }
+@@ -3643,7 +3658,15 @@ ScalarExprEmitter::VisitUnaryExprOrTypeTraitExpr(
+                                           VlaSize.NumElts);
+         return VlaSize.NumElts;
+       }
+-    }
++    } /*else if(Kind == UETT_SizeOf && E->isArgumentType()) {
++      // ToDO: Only do this for RandStructs
++      const Type* Type = E->getArgumentType().getTypePtr();
++      if (const RecordType* RT = Type->getAs<RecordType>()) {
++        RecordDecl *RD = RT->getDecl();
++        const CGRecordLayout &RL = CGF.CGM.getTypes().getCGRecordLayout(RD);
++        return RL.getSizeOfRelocationSym();
++      }
++    } */
+   } else if (E->getKind() == UETT_OpenMPRequiredSimdAlign) {
+     auto Alignment =
+         CGF.getContext()
+@@ -4249,6 +4272,10 @@ static Value *emitPointerArithmetic(CodeGenFunction &CGF, const BinOpInfo &op,
+ llvm::Value *CodeGenFunction::EmitPointerArithmetic(
+     const BinaryOperator *BO, Expr *pointerOperand, llvm::Value *pointer,
+     Expr *indexOperand, llvm::Value *index, bool isSubtraction) {
++
++  if (auto GV = llvm::dyn_cast<llvm::GlobalVariable>(index))
++    return Builder.emitGEPWithAbsSym(pointer, GV, isSubtraction);
++
+   bool isSigned = indexOperand->getType()->isSignedIntegerOrEnumerationType();
+ 
+   unsigned width = cast<llvm::IntegerType>(index->getType())->getBitWidth();
+@@ -4696,7 +4723,15 @@ Value *ScalarExprEmitter::EmitSub(const BinOpInfo &op) {
+ 
+   // If the RHS is not a pointer, then we have normal pointer
+   // arithmetic.
+-  if (!op.RHS->getType()->isPointerTy())
++  bool rhsIsAbsSymbol = false;
++  if (auto GV = llvm::dyn_cast<llvm::GlobalVariable>(op.RHS)) {
++    if (GV->hasMetadata("absolute_symbol")) {
++      // Because the global var is absolute symbol we can emit a GEP
++      // This is also needed for the randstruct code
++      rhsIsAbsSymbol = true;
++    }
++  }
++  if (!op.RHS->getType()->isPointerTy() || rhsIsAbsSymbol)
+     return emitPointerArithmetic(CGF, op, CodeGenFunction::IsSubtraction);
+ 
+   // Otherwise, this is a pointer subtraction.
+diff --git a/clang/lib/CodeGen/CGRecordLayout.h b/clang/lib/CodeGen/CGRecordLayout.h
+index 44e888c93..3eb61f71b 100644
+--- a/clang/lib/CodeGen/CGRecordLayout.h
++++ b/clang/lib/CodeGen/CGRecordLayout.h
+@@ -9,11 +9,13 @@
+ #ifndef LLVM_CLANG_LIB_CODEGEN_CGRECORDLAYOUT_H
+ #define LLVM_CLANG_LIB_CODEGEN_CGRECORDLAYOUT_H
+ 
++#include "CodeGenModule.h"
+ #include "clang/AST/CharUnits.h"
+ #include "clang/AST/DeclCXX.h"
+ #include "clang/Basic/LLVM.h"
+ #include "llvm/ADT/DenseMap.h"
+ #include "llvm/IR/DerivedTypes.h"
++#include "llvm/IR/GlobalVariable.h"
+ 
+ namespace llvm {
+   class StructType;
+@@ -125,6 +127,8 @@ class CGRecordLayout {
+   CGRecordLayout(const CGRecordLayout &) = delete;
+   void operator=(const CGRecordLayout &) = delete;
+ 
++  static constexpr char RANDSTRUCT_RELOC_PREFIX[] = "_randstruct_offset_";
++
+ private:
+   /// The LLVM type corresponding to this record layout; used when
+   /// laying it out as a complete object.
+@@ -138,6 +142,10 @@ private:
+   /// type field no. This info is populated by record builder.
+   llvm::DenseMap<const FieldDecl *, unsigned> FieldInfo;
+ 
++  /// Map from (non-bit-field) struct field to the corresponding llvm global
++  /// variable. Used for struct randomization, populated after record is build
++  llvm::DenseMap<const FieldDecl *, llvm::GlobalVariable *> GlobalVars;
++
+   /// Map from (bit-field) struct field to the corresponding llvm struct type
+   /// field no. This info is populated by record builder.
+   llvm::DenseMap<const FieldDecl *, CGBitFieldInfo> BitFields;
+@@ -159,6 +167,10 @@ private:
+   /// when zero-initialized.
+   bool IsZeroInitializableAsBase : 1;
+ 
++  // False if the struct is not being randomized. requires that member globals
++  // are generated if true.
++  bool IsRandstruct : 1;
++
+ public:
+   CGRecordLayout(llvm::StructType *CompleteObjectType,
+                  llvm::StructType *BaseSubobjectType,
+@@ -167,7 +179,8 @@ public:
+     : CompleteObjectType(CompleteObjectType),
+       BaseSubobjectType(BaseSubobjectType),
+       IsZeroInitializable(IsZeroInitializable),
+-      IsZeroInitializableAsBase(IsZeroInitializableAsBase) {}
++      IsZeroInitializableAsBase(IsZeroInitializableAsBase),
++      IsRandstruct(false) {}
+ 
+   /// Return the "complete object" LLVM type associated with
+   /// this record.
+@@ -197,6 +210,13 @@ public:
+     return FieldInfo.count(FD) != 0;
+   }
+ 
++  bool isRandstruct() const {
++    return IsRandstruct;
++  }
++  void markAsRandstruct() {
++    IsRandstruct = true;
++  }
++
+   /// Return llvm::StructType element number that corresponds to the
+   /// field FD.
+   unsigned getLLVMFieldNo(const FieldDecl *FD) const {
+@@ -205,6 +225,14 @@ public:
+     return FieldInfo.lookup(FD);
+   }
+ 
++  // Return llvm::GlobalVariable* which is the absolut_symbol containg 
++  // the offset of the struct element
++  llvm::GlobalVariable* getGlobalVarForField(const FieldDecl *FD) const {
++    FD = FD->getCanonicalDecl();
++    assert(FieldInfo.count(FD) && "Invalid field for record!");
++    return GlobalVars.lookup(FD);
++  } 
++
+   // Return whether the following non virtual base has a corresponding
+   // entry in the LLVM struct.
+   bool hasNonVirtualBaseLLVMField(const CXXRecordDecl *RD) const {
+@@ -223,6 +251,35 @@ public:
+     return CompleteObjectVirtualBases.lookup(base);
+   }
+ 
++  void createMemberGlobals(CodeGenModule& CGM, llvm::StringRef RecordName) {
++  // ToDo:
++  //    - only do this for C Structs, not other RecordDecl Types
++  auto &ctx = CGM.getLLVMContext();
++  auto &module = CGM.getModule();
++
++  llvm::Metadata *addrStartMeta = llvm::ConstantAsMetadata::get(
++      llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0));
++
++  llvm::Metadata *addrEndMeta = llvm::ConstantAsMetadata::get(
++      llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 256));
++
++  for (auto& field: FieldInfo) {
++    std::string name = RANDSTRUCT_RELOC_PREFIX + std::string(RecordName) + "_" + field.getFirst()->getNameAsString();
++    llvm::GlobalVariable *globalVar = new llvm::GlobalVariable(
++        module, llvm::Type::getInt32Ty(ctx), true,
++        llvm::GlobalValue::ExternalLinkage, nullptr, name);
++
++    globalVar->setAlignment(llvm::Align(4));
++
++    llvm::MDNode *absSymbolNode =
++        llvm::MDNode::get(ctx, {addrStartMeta, addrEndMeta});
++
++    globalVar->addMetadata("absolute_symbol", *absSymbolNode);
++
++    GlobalVars[field.getFirst()] = globalVar;
++  }
++};
++
+   /// Return the BitFieldInfo that corresponds to the field FD.
+   const CGBitFieldInfo &getBitFieldInfo(const FieldDecl *FD) const {
+     FD = FD->getCanonicalDecl();
+diff --git a/clang/lib/CodeGen/CodeGenFunction.h b/clang/lib/CodeGen/CodeGenFunction.h
+index 8c4c1c8c2..aecbb5b05 100644
+--- a/clang/lib/CodeGen/CodeGenFunction.h
++++ b/clang/lib/CodeGen/CodeGenFunction.h
+@@ -5022,7 +5022,7 @@ public:
+   /// EmitAggExpr - Emit the computation of the specified expression
+   /// of aggregate type.  The result is computed into the given slot,
+   /// which may be null to indicate that the value is not needed.
+-  void EmitAggExpr(const Expr *E, AggValueSlot AS);
++  void EmitAggExpr(const Expr *E, AggValueSlot AS, bool isRandomized = false);
+ 
+   /// EmitAggExprToLValue - Emit the computation of the specified expression of
+   /// aggregate type into a temporary LValue.
+diff --git a/clang/lib/CodeGen/CodeGenTypes.cpp b/clang/lib/CodeGen/CodeGenTypes.cpp
+index ea31195b7..5b5ee9be9 100644
+--- a/clang/lib/CodeGen/CodeGenTypes.cpp
++++ b/clang/lib/CodeGen/CodeGenTypes.cpp
+@@ -819,6 +819,10 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
+ 
+   // Layout fields.
+   std::unique_ptr<CGRecordLayout> Layout = ComputeRecordLayout(RD, Ty);
++  if (RD->isRandomized()) {
++    Layout->markAsRandstruct();
++    Layout->createMemberGlobals(CGM, RD->getName());
++  }
+   CGRecordLayouts[Key] = std::move(Layout);
+ 
+   // If this struct blocked a FunctionType conversion, then recompute whatever
+diff --git a/clang/lib/Sema/SemaDecl.cpp b/clang/lib/Sema/SemaDecl.cpp
+index 086dd8ba1..e4a80faf9 100644
+--- a/clang/lib/Sema/SemaDecl.cpp
++++ b/clang/lib/Sema/SemaDecl.cpp
+@@ -19947,10 +19947,13 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
+         (Record->hasAttr<RandomizeLayoutAttr>() ||
+          (!Record->hasAttr<NoRandomizeLayoutAttr>() &&
+           EntirelyFunctionPointers(Record)))) {
++
+       SmallVector<Decl *, 32> NewDeclOrdering;
+-      if (randstruct::randomizeStructureLayout(Context, Record,
+-                                               NewDeclOrdering))
+-        Record->reorderDecls(NewDeclOrdering);
++      if (randstruct::rearangeToLargestLayout(Context, Record, NewDeclOrdering)) {
++          Record->reorderDecls(NewDeclOrdering);
++          llvm::outs() << "Randomized Record: "<< Record->getName() << "\n";
++
++      }
+     }
+ 
+     // We may have deferred checking for a deleted destructor. Check now.
+diff --git a/llvm/lib/IR/Instructions.cpp b/llvm/lib/IR/Instructions.cpp
+index cd39970f5..d463611b4 100644
+--- a/llvm/lib/IR/Instructions.cpp
++++ b/llvm/lib/IR/Instructions.cpp
+@@ -3348,29 +3348,36 @@ CastInst::castIsValid(Instruction::CastOps op, Type *SrcTy, Type *DstTy) {
+     return SrcTy->isIntOrIntVectorTy() && DstTy->isIntOrIntVectorTy() &&
+            SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize;
+   case Instruction::FPTrunc:
++    
+     return SrcTy->isFPOrFPVectorTy() && DstTy->isFPOrFPVectorTy() &&
+            SrcEC == DstEC && SrcScalarBitSize > DstScalarBitSize;
+   case Instruction::FPExt:
++    
+     return SrcTy->isFPOrFPVectorTy() && DstTy->isFPOrFPVectorTy() &&
+            SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize;
+   case Instruction::UIToFP:
+   case Instruction::SIToFP:
++    
+     return SrcTy->isIntOrIntVectorTy() && DstTy->isFPOrFPVectorTy() &&
+            SrcEC == DstEC;
+   case Instruction::FPToUI:
+   case Instruction::FPToSI:
++    
+     return SrcTy->isFPOrFPVectorTy() && DstTy->isIntOrIntVectorTy() &&
+            SrcEC == DstEC;
+   case Instruction::PtrToAddr:
+   case Instruction::PtrToInt:
++    
+     if (SrcEC != DstEC)
+       return false;
+     return SrcTy->isPtrOrPtrVectorTy() && DstTy->isIntOrIntVectorTy();
+   case Instruction::IntToPtr:
++    
+     if (SrcEC != DstEC)
+       return false;
+     return SrcTy->isIntOrIntVectorTy() && DstTy->isPtrOrPtrVectorTy();
+   case Instruction::BitCast: {
++    
+     PointerType *SrcPtrTy = dyn_cast<PointerType>(SrcTy->getScalarType());
+     PointerType *DstPtrTy = dyn_cast<PointerType>(DstTy->getScalarType());
+ 
+@@ -3399,16 +3406,20 @@ CastInst::castIsValid(Instruction::CastOps op, Type *SrcTy, Type *DstTy) {
+     return true;
+   }
+   case Instruction::AddrSpaceCast: {
++    
+     PointerType *SrcPtrTy = dyn_cast<PointerType>(SrcTy->getScalarType());
+     if (!SrcPtrTy)
+       return false;
++    
+ 
+     PointerType *DstPtrTy = dyn_cast<PointerType>(DstTy->getScalarType());
+     if (!DstPtrTy)
+       return false;
++    
+ 
+     if (SrcPtrTy->getAddressSpace() == DstPtrTy->getAddressSpace())
+       return false;
++    
+ 
+     return SrcEC == DstEC;
+   }
+diff --git a/sync.sh b/sync.sh
+new file mode 100755
+index 000000000..1cf0d6ebe
+--- /dev/null
++++ b/sync.sh
+@@ -0,0 +1,2 @@
++rsync -az --delete --info=progress2 --exclude='build/' --exclude='.git/' --exclude='.github/' --exclude='sync.sh' ./ prakhn:~/llvm-project/ 
++ssh -t prakhn "cd ~/llvm-project/build && ninja -j30"

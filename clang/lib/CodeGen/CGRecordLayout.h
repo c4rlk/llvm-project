@@ -16,6 +16,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/GlobalVariable.h"
+#include <clang/AST/Decl.h>
 
 namespace llvm {
   class StructType;
@@ -251,9 +252,7 @@ public:
     return CompleteObjectVirtualBases.lookup(base);
   }
 
-  void createMemberGlobals(CodeGenModule& CGM, llvm::StringRef RecordName) {
-  // ToDo:
-  //    - only do this for C Structs, not other RecordDecl Types
+  void createMemberGlobals(CodeGenTypes& CGT, CodeGenModule& CGM, std::string RecordName) {
   auto &ctx = CGM.getLLVMContext();
   auto &module = CGM.getModule();
 
@@ -263,8 +262,23 @@ public:
   llvm::Metadata *addrEndMeta = llvm::ConstantAsMetadata::get(
       llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 256));
 
-  for (auto& field: FieldInfo) {
-    std::string name = RANDSTRUCT_RELOC_PREFIX + std::string(RecordName) + "_" + field.getFirst()->getNameAsString();
+  for (auto& it: FieldInfo) {
+    const FieldDecl* FD = it.getFirst();
+    const FieldDecl* FDname = FD;
+    while(FDname->isAnonymousStructOrUnion()) {
+      const auto *RT = FDname->getType()->getAs<RecordType>();
+      assert(RT && "Anonymous struct/union must have RecordType");
+
+      const RecordDecl *RD = RT->getDecl();
+      assert(RD && "Anonymous struct/union must have RecordDecl");
+
+      auto fieldIt = RD->field_begin();
+      assert(fieldIt != RD->field_end() &&
+             "Randomized struct may not have empty anonymous structs or unions");
+
+      FDname = *fieldIt;
+    }
+    std::string name = RANDSTRUCT_RELOC_PREFIX + RecordName + "_" + FDname->getNameAsString();
     llvm::GlobalVariable *globalVar = new llvm::GlobalVariable(
         module, llvm::Type::getInt32Ty(ctx), true,
         llvm::GlobalValue::ExternalLinkage, nullptr, name);
@@ -276,7 +290,7 @@ public:
 
     globalVar->addMetadata("absolute_symbol", *absSymbolNode);
 
-    GlobalVars[field.getFirst()] = globalVar;
+    GlobalVars[FD] = globalVar;
   }
 };
 

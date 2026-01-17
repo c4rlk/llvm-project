@@ -5252,17 +5252,18 @@ static Address emitAddrOfFieldStorage(CodeGenFunction &CGF, Address base,
   unsigned idx =
     CGF.CGM.getTypes().getCGRecordLayout(rec).getLLVMFieldNo(field);
 
-  if (!IsInBounds)
-    return CGF.Builder.CreateConstGEP2_32(base, 0, idx, field->getName());
-
   const CGRecordLayout &RL =
         CGF.CGM.getTypes().getCGRecordLayout(field->getParent());
 
   if (RL.isRandstruct()) {
+    llvm::outs() << "Emit Member Addr via relocation\n";
     llvm::GlobalVariable* globalOffset = CGF.CGM.getTypes().getCGRecordLayout(rec).getGlobalVarForField(field);
 
-    return CGF.Builder.CreateStructGEP_32GlobalOffset(base, globalOffset, field, idx, field->getName());
+    return CGF.Builder.CreateStructGEP_32GlobalOffset(base, globalOffset, field, idx, IsInBounds, field->getName());
   }
+
+  if (!IsInBounds)
+    return CGF.Builder.CreateConstGEP2_32(base, 0, idx, field->getName());
  
   return CGF.Builder.CreateStructGEP(base, idx, field->getName());
 }

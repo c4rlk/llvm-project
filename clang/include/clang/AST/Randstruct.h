@@ -24,6 +24,7 @@ class ASTContext;
 class Decl;
 class RecordDecl;
 class CharUnits;
+class VarDecl;
 
 namespace randstruct {
 
@@ -34,6 +35,9 @@ bool rearangeToLargestLayout(const ASTContext &Context, RecordDecl *RD,
                                 llvm::SmallVectorImpl<Decl *> &FinalOrdering);
 
 CharUnits calculateWorstSize(const ASTContext &Context, const RecordDecl* RD);
+
+void emitRandomizationMetadata(const RecordDecl *RD, const ASTContext &Context);
+void emitStaticStructMetadata(const VarDecl *VD, const RecordDecl *RD);
 
 }// namespace randstruct
 } // namespace clang

@@ -252,6 +252,7 @@ public:
   Address CreateStructGEP_32GlobalOffset(Address Addr,
                                          llvm::GlobalVariable *GlobalVar,
                                          const FieldDecl *Field, unsigned Index,
+                                         bool inbounds,
                                          const llvm::Twine &Name = "") {
     llvm::Value *BasePtr = Addr.getBasePointer();
     llvm::LLVMContext &Ctx = BasePtr->getContext();
@@ -264,8 +265,15 @@ public:
     auto AlignmentOffset =
         CharUnits::fromQuantity(Layout->getElementOffset(Index));
 
-    return Address(CreateGEP(llvm::Type::getInt8Ty(Ctx), BasePtr, Offset, Name),
+    if (inbounds) {
+      return Address(
+          CreateInBoundsGEP(llvm::Type::getInt8Ty(Ctx), BasePtr, Offset, Name),
+          Addr.getElementType(),
+          Addr.getAlignment().alignmentAtOffset(AlignmentOffset),
+          Addr.isKnownNonNull());
+    }
 
+    return Address(CreateGEP(llvm::Type::getInt8Ty(Ctx), BasePtr, Offset, Name),
                    Addr.getElementType(),
                    Addr.getAlignment().alignmentAtOffset(AlignmentOffset),
                    Addr.isKnownNonNull());

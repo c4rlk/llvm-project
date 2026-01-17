@@ -820,8 +820,19 @@ llvm::StructType *CodeGenTypes::ConvertRecordDeclType(const RecordDecl *RD) {
   // Layout fields.
   std::unique_ptr<CGRecordLayout> Layout = ComputeRecordLayout(RD, Ty);
   if (RD->isRandomized()) {
+    const RecordDecl* RDName = RD;
+    std::string str = RDName->getNameAsString();
+    while (str.empty()) {
+      if (!(RDName = llvm::dyn_cast<clang::RecordDecl>(RDName->getDeclContext()))) {
+        str = "TotalyAnonStruct";
+        break;
+      } else {
+        str = RDName->getNameAsString();
+      }
+    }
+    
     Layout->markAsRandstruct();
-    Layout->createMemberGlobals(CGM, RD->getName());
+    Layout->createMemberGlobals(*this, CGM, str);
   }
   CGRecordLayouts[Key] = std::move(Layout);
 

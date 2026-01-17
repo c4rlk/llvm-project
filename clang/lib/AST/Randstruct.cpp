@@ -18,6 +18,7 @@
 #include "clang/AST/DeclCXX.h" // For StaticAssertDecl
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Process.h"
 
 #include <algorithm>
 #include <compare>
@@ -317,6 +318,80 @@ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
          "Decl count has been altered after Randstruct randomization!");
   (void)TotalNumFields;
   return true;
+}
+
+std::string getNameOfRecord(const RecordDecl* RD) {
+  auto *RecordName = RD;
+  std::string name;
+  bool notTotalyAnonStruct = true;
+  while (RecordName->getName().empty()) {
+    RecordName =
+        llvm::dyn_cast<clang::RecordDecl>(RecordName->getDeclContext());
+    if (!RecordName) {
+      notTotalyAnonStruct = false;
+      name = "TotalyAnon Struct";
+      break;
+    }
+  }
+  if (notTotalyAnonStruct)
+    name = RecordName->getNameAsString();
+
+  return name;
+}
+
+void emitStaticStructMetadata(const VarDecl *VD, const RecordDecl *RD) {
+  unsigned PID = llvm::sys::Process::getProcessId();
+  std::string Filename = "./randStructInfo/" + std::to_string(PID) + "_static" +".txt";
+
+  std::error_code EC;
+  llvm::raw_fd_ostream OS(Filename, EC, llvm::sys::fs::OF_Append);
+  if (EC) {
+    llvm::errs() << "Could not open file: " << EC.message() << "\n";
+    llvm::ExitOnError("Metadata file for randstruct could not be opend", -1);
+  }
+
+  OS << VD->getName() << "," << getNameOfRecord(RD) << "\n";
+
+  llvm::dbgs() << "Static lifetime struct variable: " << VD->getName() << " of type: " << RD->getName()<<"\n";
+}
+
+void emitRandomizationMetadata(const RecordDecl *RD, const ASTContext &Context) {
+  unsigned PID = llvm::sys::Process::getProcessId();
+  std::string Filename = "./randStructInfo/" + std::to_string(PID) + "_rand" +".txt";
+
+  std::error_code EC;
+  llvm::raw_fd_ostream OS(Filename, EC, llvm::sys::fs::OF_Append);
+  if (EC) {
+    llvm::errs() << "Could not open file: " << EC.message() << "\n";
+    llvm::ExitOnError("Metadata file for randstruct could not be opend", -1);
+  }
+
+  // llvm::dbgs() << "Randomized Record: " << name << "\n";
+
+  OS << getNameOfRecord(RD) << "," << RD->hasFlexibleArrayMember() << "\n";
+
+  for (const clang::FieldDecl *FD : RD->fields()) {
+    uint64_t fieldSize =
+        Context.getTypeSizeInChars(FD->getType()).getQuantity();
+    uint64_t fieldAlignment =
+        std::max(static_cast<uint64_t>(
+                     Context.getTypeAlignInChars(FD->getType()).getQuantity()),
+                 static_cast<uint64_t>(FD->getMaxAlignment()));
+
+    while (FD->isAnonymousStructOrUnion()) {
+      const RecordDecl *RD = FD->getType()->getAsRecordDecl();
+      FD = *RD->field_begin();
+    }
+    std::string FieldName = FD->getNameAsString();
+    if (FieldName.empty()) {
+      OS << "[Anonymous Field]";
+    } else {
+      OS << FieldName;
+    }
+    OS << "," << fieldSize << "," << fieldAlignment << "\n";
+  }
+
+  OS << "-\n";
 }
 
 // This helper function calculates the worst possible size of a struct.
