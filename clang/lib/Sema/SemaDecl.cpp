@@ -6265,7 +6265,6 @@ Decl *Sema::ActOnDeclarator(Scope *S, Declarator &D) {
 
   Decl *Dcl = HandleDeclarator(S, D, MultiTemplateParamsArg());
 
-  // Mark Carl
   if (auto *VD = dyn_cast<VarDecl>(Dcl)) {
     if (VD->hasGlobalStorage() && !getLangOpts().CPlusPlus && !getLangOpts().RandstructSeed.empty()) {
       if (const RecordType *RT = VD->getType()->getAs<RecordType>()) {
@@ -19963,9 +19962,12 @@ if (Record) {
   // of function pointers, unless it has the "no_randomize_layout" attribute.
   if (!getLangOpts().CPlusPlus && !getLangOpts().RandstructSeed.empty() &&
       !Record->isRandomized() && !Record->isUnion() &&
-      (/*Record->hasAttr<RandomizeLayoutAttr>() ||*/
+       (/*Record->hasAttr<RandomizeLayoutAttr>() ||*/
        (!Record->hasAttr<NoRandomizeLayoutAttr>() &&
-        EntirelyFunctionPointers(Record)))) {
+        EntirelyFunctionPointers(Record))) &&
+      !Record->isAnonymousStructOrUnion() && !Record->getNameAsString().empty()
+      ) {
+    llvm::dbgs() << Record->getNameAsString().empty() << " _ " << Record->isAnonymousStructOrUnion() << "\n";
 
     SmallVector<Decl *, 32> NewDeclOrdering;
     if (randstruct::rearangeToLargestLayout(Context, Record, NewDeclOrdering)) {

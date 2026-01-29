@@ -320,7 +320,7 @@ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
   return true;
 }
 
-std::string getNameOfRecord(const RecordDecl* RD) {
+std::string getNameOfRecord(const RecordDecl *RD) {
   auto *RecordName = RD;
   std::string name;
   bool notTotalyAnonStruct = true;
@@ -341,7 +341,8 @@ std::string getNameOfRecord(const RecordDecl* RD) {
 
 void emitStaticStructMetadata(const VarDecl *VD, const RecordDecl *RD) {
   unsigned PID = llvm::sys::Process::getProcessId();
-  std::string Filename = "./randStructInfo/" + std::to_string(PID) + "_static" +".txt";
+  std::string Filename =
+      "./randStructInfo/" + std::to_string(PID) + "_static" + ".txt";
 
   std::error_code EC;
   llvm::raw_fd_ostream OS(Filename, EC, llvm::sys::fs::OF_Append);
@@ -352,12 +353,15 @@ void emitStaticStructMetadata(const VarDecl *VD, const RecordDecl *RD) {
 
   OS << VD->getName() << "," << getNameOfRecord(RD) << "\n";
 
-  llvm::dbgs() << "Static lifetime struct variable: " << VD->getName() << " of type: " << RD->getName()<<"\n";
+  llvm::dbgs() << "Static lifetime struct variable: " << VD->getName()
+               << " of type: " << RD->getName() << "\n";
 }
 
-void emitRandomizationMetadata(const RecordDecl *RD, const ASTContext &Context) {
+void emitRandomizationMetadata(const RecordDecl *RD,
+                               const ASTContext &Context) {
   unsigned PID = llvm::sys::Process::getProcessId();
-  std::string Filename = "./randStructInfo/" + std::to_string(PID) + "_rand" +".txt";
+  std::string Filename =
+      "./randStructInfo/" + std::to_string(PID) + "_rand" + ".txt";
 
   std::error_code EC;
   llvm::raw_fd_ostream OS(Filename, EC, llvm::sys::fs::OF_Append);
@@ -377,6 +381,18 @@ void emitRandomizationMetadata(const RecordDecl *RD, const ASTContext &Context) 
         std::max(static_cast<uint64_t>(
                      Context.getTypeAlignInChars(FD->getType()).getQuantity()),
                  static_cast<uint64_t>(FD->getMaxAlignment()));
+    int fieldIsStruct = 0;
+    std::string fieldTypeName = "-";
+
+    if (const auto *RT = FD->getType()->getAs<clang::RecordType>()) {
+      const clang::RecordDecl *RD = RT->getDecl();
+      fieldIsStruct = !RD->isStruct() ? !RD->isUnion() ? 0 : 2 : 1;
+      if (RD->getIdentifier()) {
+        fieldTypeName = RD->getName().str();
+      } else {
+        fieldTypeName = "[anonymous]";
+      }
+    }
 
     while (FD->isAnonymousStructOrUnion()) {
       const RecordDecl *RD = FD->getType()->getAsRecordDecl();
@@ -388,7 +404,7 @@ void emitRandomizationMetadata(const RecordDecl *RD, const ASTContext &Context) 
     } else {
       OS << FieldName;
     }
-    OS << "," << fieldSize << "," << fieldAlignment << "\n";
+    OS << "," << fieldSize << "," << fieldAlignment << "," << fieldIsStruct << "," << (fieldIsStruct == 1 ? fieldTypeName :"-" )<<"\n";
   }
 
   OS << "-\n";
