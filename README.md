@@ -1,3 +1,12 @@
+This is a fork of the LLVM Project.
+I patched the compiler for my bachelor's thesis at TUM: "Enhancing Linux’s Binary Exploitation Protection by Compiler-Based Dynamic Structure Layout Randomization."
+
+This patch changes Clang's LLVM-IR generation of struct field accesses, initializations, and allocations.
+It is important to note that this is only a prototype/proof of concept. The functionality was tested only against the Linux kernel, does not support all structs (especially structs containing bitfields), and, to my knowledge, only works for C - though I have not tested whether C++ code breaks.
+
+Furthermore, there are auxiliary scripts tying everything together, which are published in the `relocgen` repo.
+
+
 # The LLVM Compiler Infrastructure
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/llvm/llvm-project/badge)](https://securityscorecards.dev/viewer/?uri=github.com/llvm/llvm-project)
